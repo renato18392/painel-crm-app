@@ -107,6 +107,7 @@ tr:hover td{background:var(--bg)}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){color-scheme:dark}}
 .sub{color:var(--sub)}
 .b-pago{background:#dcfce7;color:#15803d}
+.b-agendada{background:#e0e7ff;color:#4338ca}.b-concluida{background:#dcfce7;color:#15803d}.b-cancelada{background:#fee2e2;color:#b91c1c}
 .ctls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .ctl{padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel);font-size:13px;color:var(--text);min-width:0}
 .menu-btn{display:none;border:1px solid var(--border);background:var(--bg);border-radius:8px;font-size:18px;padding:3px 10px;cursor:pointer}
@@ -249,7 +250,8 @@ const CAT_COLORS=['#6366f1','#22c55e','#f59e0b','#ef4444','#06b6d4','#a855f7','#
 
 const STATUS_LABEL = {novo:'Novo',contatado:'Contatado',negociacao:'Negociação',proposta_enviada:'Proposta',fechado:'Fechado',perdido:'Perdido',
   recebido:'Recebido',pendente:'Pendente',atrasado:'Atrasado',cancelado:'Cancelado',
-  planejamento:'Planejamento',em_andamento:'Em andamento',aguardando_cliente:'Aguardando cliente',concluido:'Concluído'};
+  planejamento:'Planejamento',em_andamento:'Em andamento',aguardando_cliente:'Aguardando cliente',concluido:'Concluído',
+  agendada:'Agendada',concluida:'Concluída',cancelada:'Cancelada'};
 
 // Remove os dados de demonstração antigos (apenas os que foram criados automaticamente)
 function removeOldDemo(){
@@ -274,7 +276,7 @@ function toast(msg){
 
 // ---------- routing ----------
 const PAGES=[['dashboard','Dashboard','📊'],['contacts','Contatos','👥'],['pipeline','Pipeline','📈'],
-  ['earnings','Ganhos','💰'],['expenses','Despesas','💸'],['projects','Projetos','📁'],['settings','Configurações','⚙️']];
+  ['earnings','Ganhos','💰'],['expenses','Despesas','💸'],['projects','Projetos','📁'],['meetings','Agendamentos','📅'],['settings','Configurações','⚙️']];
 function renderNav(){
   document.getElementById('nav').innerHTML = PAGES.map(([id,label,icon])=>
     `<a class="${route===id?'active':''}" onclick="go('${id}')">${icon} ${label}</a>`).join('');
@@ -293,6 +295,7 @@ function render(){
   if(route==='earnings') c.innerHTML = pageEarnings();
   if(route==='expenses') c.innerHTML = pageExpenses();
   if(route==='projects') c.innerHTML = pageProjects();
+  if(route==='meetings') c.innerHTML = pageMeetings();
   if(route==='settings') c.innerHTML = pageSettings();
 }
 
@@ -389,6 +392,7 @@ function pageDashboard(){
     <div class="panel"><h3>Novos contatos por mês</h3>${chartBars(labels,[{name:'Contatos',color:'#06b6d4',values:newC}],months.indexOf(ref),x=>x+' contato(s)')}</div>
     <div class="panel"><h3>Orçamento de despesas · ${ymLabel(ref)}</h3>${budgetBlock(dM,budget)}</div>
   </div>
+  <div class="panel"><h3>🔔 Próximas reuniões</h3>${upcomingMeetingsHtml(C)}</div>
   <div class="panel"><h3>Atividades recentes</h3>
     ${acts.length?acts.map(a=>`<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">${esc(a.description)} <span class="sub" style="font-size:11px;float:right">${new Date(a.createdAt).toLocaleString('pt-BR')}</span></div>`).join(''):'<div class="empty">Nenhuma atividade ainda</div>'}
   </div>`;
@@ -456,8 +460,12 @@ function pagePipeline(){
   const contacts=DB.get('contacts',[]);
   const total=contacts.length;
   const val=contacts.reduce((s,c)=>s+Number(c.potentialValue||0),0);
+  const pms=lastMonths(6),pvals=pms.map(monthEarn);
   return `
   <div class="grid">${card('Oportunidades',total)}${card('Valor total',fmtC(val))}${card('Valor médio',fmtC(total?val/total:0))}</div>
+  <div class="panel"><h3>Renda total recebida por mês</h3>
+    ${chartBars(pms.map(ymLabel),[{name:'Recebido',color:'#22c55e',type:'line',values:pvals}],pms.length-1)}
+  </div>
   <div class="kanban">${PIPE_COLS.map(col=>`
     <div class="kcol" ondragover="event.preventDefault()" ondrop="dropCard(event,'${col}')">
       <h4>${STATUS_LABEL[col]} (${contacts.filter(c=>c.status===col).length})</h4>
@@ -655,13 +663,22 @@ function exportXlsx(){
     ['Total de contatos',C.length],['Contatos fechados',closed],['Taxa de conversão (%)',C.length?Math.round(closed/C.length*100):0],
     ['Pipeline em aberto',sum(C.map(c=>({value:c.potentialValue,status:c.status})),c=>['novo','contatado','negociacao','proposta_enviada'].includes(c.status)),1],
     ['Projetos em andamento',P.filter(p=>p.status==='em_andamento').length],['Projetos concluídos',P.filter(p=>p.status==='concluido').length],['Gerado em',fmtD(todayISO())]];
-  const wsR=XLSX.utils.aoa_to_sheet(resumo.map(r=>[r[0],r[1]]));wsR['!cols']=[{wch:34},{wch:18}];
+  const catsAll=catTotals(X);
+  const maxRows=Math.max(resumo.length,catsAll.length+1);
+  const aoa=[];
+  for(let i=0;i<maxRows;i++){
+    const r=resumo[i]||['',''];
+    const c=catsAll[i-1];
+    aoa.push(i===0?[r[0],r[1],'','Despesas por categoria','']:[r[0],r[1],'',c?c.label:'',c?c.value:'']);
+  }
+  const wsR=XLSX.utils.aoa_to_sheet(aoa);wsR['!cols']=[{wch:34},{wch:18},{wch:3},{wch:26},{wch:14}];
   resumo.forEach((r,i)=>{if(r[2]&&i>0){const c=wsR['B'+(i+1)];if(c&&typeof c.v==='number')c.z='"R$" #,##0.00';}});
+  catsAll.forEach((c,i)=>{const cell=wsR['E'+(i+2)];if(cell&&typeof cell.v==='number')cell.z='"R$" #,##0.00';});
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,wsR,'Resumo');
   XLSX.utils.book_append_sheet(wb,sheet(ms.map(m=>({'Mês':ymLabel(m),Ganhos:monthEarn(m),Despesas:monthExp(m),Lucro:monthEarn(m)-monthExp(m)})),['Mês','Ganhos','Despesas','Lucro']),'Mensal');
   XLSX.utils.book_append_sheet(wb,sheet(catTotals(X).map(c=>({Categoria:c.label,Valor:c.value})),['Categoria','Valor']),'Despesas por categoria');
-  XLSX.utils.book_append_sheet(wb,sheet(C.map(c=>({Nome:c.name,Empresa:c.company||'','Serviço':c.service||'','Valor potencial':Number(c.potentialValue||0),Status:STATUS_LABEL[c.status]||c.status,Origem:c.source||'','Data do contato':fmtD(c.createdAt),WhatsApp:c.whatsapp||'','E-mail':c.email||''})),['Nome','Empresa','Serviço','Valor potencial','Status','Origem','Data do contato','WhatsApp','E-mail']),'Contatos');
+  XLSX.utils.book_append_sheet(wb,sheet(C.map(c=>({Nome:c.name,Telefone:c.whatsapp||'','Valor potencial':Number(c.potentialValue||0),'Situação':c.status==='fechado'?'Fechado':'Pendente',Status:STATUS_LABEL[c.status]||c.status,Empresa:c.company||'','Serviço':c.service||'',Origem:c.source||'','Data do contato':fmtD(c.createdAt),'E-mail':c.email||''})),['Nome','Telefone','Valor potencial','Situação','Status','Empresa','Serviço','Origem','Data do contato','E-mail']),'Contatos');
   XLSX.utils.book_append_sheet(wb,sheet(P.map(p=>({Projeto:p.name,Cliente:cn(p.contactId),Valor:Number(p.value||0),Status:STATUS_LABEL[p.status]||p.status,Prioridade:p.priority||'','Progresso (%)':p.progress||0})),['Projeto','Cliente','Valor','Status','Prioridade','Progresso (%)']),'Projetos');
   XLSX.utils.book_append_sheet(wb,sheet(E.map(e=>({Data:fmtD(e.date),Cliente:cn(e.contactId),Valor:Number(e.value),Forma:PAYL[e.paymentMethod]||e.paymentMethod||'',Status:STATUS_LABEL[e.paymentStatus]||'',Categoria:e.category||'','Observações':e.notes||''})),['Data','Cliente','Valor','Forma','Status','Categoria','Observações']),'Ganhos');
   XLSX.utils.book_append_sheet(wb,sheet(X.map(x=>({Data:fmtD(x.date),'Descrição':x.description,Categoria:x.category||'',Valor:Number(x.value),Forma:PAYL[x.paymentMethod]||x.paymentMethod||'',Tipo:STATUS_LABEL[x.type]||'',Status:STATUS_LABEL[x.status]||'',Recorrente:x.recurring?'Sim':'Não'})),['Data','Descrição','Categoria','Valor','Forma','Tipo','Status','Recorrente']),'Despesas');
@@ -681,29 +698,35 @@ function pageProjects(){
       </div>
       <div style="font-size:12px;color:var(--sub);margin:4px 0">${cn} · ${fmtC(p.value)} · prioridade ${p.priority}</div>
       <div style="background:var(--bg);border-radius:6px;height:6px;overflow:hidden"><div style="background:var(--brand);height:100%;width:${p.progress||0}%"></div></div>
-      <button class="icon-btn btn-danger" onclick="deleteItem('projects','${p.id}')">🗑️ remover</button>
+      <div style="margin-top:8px"><button class="icon-btn" onclick="openProjectForm('${p.id}')">✏️ editar</button><button class="icon-btn btn-danger" onclick="deleteItem('projects','${p.id}')">🗑️ excluir</button></div>
     </div>`;
   }).join('') : '<div class="empty">Nenhum projeto ainda.</div>'}</div>`;
 }
-function openProjectForm(){
-  const contacts=DB.get('contacts',[]);
-  showModal(`<h3>Novo projeto</h3>
-  <div class="field"><label>Nome *</label><input id="p_name"></div>
-  <div class="field"><label>Cliente</label><select id="p_contact"><option value="">—</option>${contacts.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}</select></div>
-  <div class="field"><label>Valor (R$)</label><input id="p_value" type="number"></div>
-  <div class="field"><label>Status</label><select id="p_status">${['planejamento','em_andamento','aguardando_cliente','concluido','cancelado'].map(s=>`<option value="${s}">${STATUS_LABEL[s]||s}</option>`).join('')}</select></div>
-  <div class="field"><label>Prioridade</label><select id="p_priority">${['baixa','media','alta','urgente'].map(s=>`<option>${s}</option>`).join('')}</select></div>
-  <div class="field"><label>Progresso (%)</label><input id="p_progress" type="number" value="0" min="0" max="100"></div>
-  <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="saveProject()">Salvar</button></div>`);
+function openProjectForm(id){
+  const contacts=DB.get('contacts',[]),p=id?DB.get('projects',[]).find(x=>x.id===id):{};
+  showModal(`<form onsubmit="saveProject('${id||''}');return false;">
+  <h3>${id?'Editar':'Novo'} projeto</h3>
+  <div class="field"><label>Nome *</label><input id="p_name" value="${esc(p.name||'')}" required></div>
+  <div class="field"><label>Cliente</label><select id="p_contact"><option value="">—</option>${contacts.map(c=>`<option value="${c.id}" ${p.contactId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+  <div class="field-grid">
+    <div class="field"><label>Valor (R$)</label><input id="p_value" type="text" inputmode="decimal" placeholder="0,00" value="${p.value?String(p.value).replace('.',','):''}"></div>
+    <div class="field"><label>Progresso (%)</label><input id="p_progress" type="number" value="${p.progress||0}" min="0" max="100"></div>
+  </div>
+  <div class="field-grid">
+    <div class="field"><label>Status</label><select id="p_status">${['planejamento','em_andamento','aguardando_cliente','concluido','cancelado'].map(s=>`<option value="${s}" ${p.status===s?'selected':''}>${STATUS_LABEL[s]||s}</option>`).join('')}</select></div>
+    <div class="field"><label>Prioridade</label><select id="p_priority">${['baixa','media','alta','urgente'].map(s=>`<option ${p.priority===s?'selected':''}>${s}</option>`).join('')}</select></div>
+  </div>
+  <div class="modal-actions"><button type="button" class="btn" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" type="submit">Salvar</button></div>
+  </form>`);
 }
-function saveProject(){
-  const name=document.getElementById('p_name').value.trim();
+function saveProject(id){
+  const name=$v('p_name').trim();
   if(!name){toast('Nome é obrigatório');return;}
-  const p={id:uid(),name,contactId:document.getElementById('p_contact').value,value:Number(document.getElementById('p_value').value)||0,
-    status:document.getElementById('p_status').value,priority:document.getElementById('p_priority').value,
-    progress:Number(document.getElementById('p_progress').value)||0,startDate:todayISO()};
-  const projects=DB.get('projects',[]); projects.push(p); DB.set('projects',projects);
-  logActivity('Novo projeto: '+name); closeModal(); toast('Projeto salvo.'); render();
+  const d={name,contactId:$v('p_contact'),value:num($v('p_value')),status:$v('p_status'),priority:$v('p_priority'),progress:Number($v('p_progress'))||0};
+  const projects=DB.get('projects',[]);
+  if(id){Object.assign(projects.find(x=>x.id===id),d);logActivity('Projeto atualizado: '+name);}
+  else{projects.push({id:uid(),...d,startDate:todayISO()});logActivity('Novo projeto: '+name);}
+  DB.set('projects',projects); closeModal(); toast('Projeto salvo.'); render();
 }
 
 // ---------- settings ----------
@@ -865,6 +888,8 @@ async function enterApp(u){
   document.getElementById('login').style.display='none';
   document.getElementById('appRoot').style.display='flex';
   removeOldDemo();route='dashboard';render();
+  if(!window.__meetTimer) window.__meetTimer=setInterval(checkMeetingReminders,20000);
+  checkMeetingReminders();
 }
 async function logout(){
   if(SB){try{await SB.auth.signOut();}catch(e){}}
@@ -893,6 +918,126 @@ async function initAuth(){
 }
 
 initAuth();
+
+// ---------- agendamentos / reuniões ----------
+const MEET_REMIND={5:'5 min antes',15:'15 min antes',30:'30 min antes',60:'1 hora antes'};
+const REC_LABEL={none:'Não repete',weekly:'Toda semana',monthly:'Todo mês'};
+let meetFilter='proximas';
+function meetings(){return DB.get('meetings',[]);}
+function meetDT(m){return new Date(m.date+'T'+(m.time||'00:00'));}
+function upcomingMeetingsHtml(contacts){
+  const now=new Date();
+  const up=meetings().filter(m=>m.status==='agendada'&&meetDT(m)>=now).sort((a,b)=>meetDT(a)-meetDT(b)).slice(0,4);
+  if(!up.length)return '<div class="empty">Nenhuma reunião agendada.</div>';
+  return up.map(m=>{
+    const cn=contacts.find(c=>c.id===m.contactId)?.name;
+    return `<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;display:flex;justify-content:space-between;gap:10px">
+      <span>${esc(m.title)}${cn?' · '+esc(cn):''}</span><b class="sub" style="font-weight:600">${fmtD(m.date)} ${m.time||''}</b></div>`;
+  }).join('');
+}
+function pageMeetings(){
+  const contacts=DB.get('contacts',[]),now=new Date();
+  const all=meetings().slice().sort((a,b)=>meetDT(a)-meetDT(b));
+  let list;
+  if(meetFilter==='hoje')list=all.filter(m=>inMonth(m.date,ymNow())&&m.date===todayISO()&&m.status==='agendada');
+  else if(meetFilter==='proximas')list=all.filter(m=>m.status==='agendada'&&meetDT(m)>=now);
+  else if(meetFilter==='historico')list=all.filter(m=>m.status!=='agendada').sort((a,b)=>meetDT(b)-meetDT(a));
+  else list=all;
+  const notifOn=typeof Notification!=='undefined'&&Notification.permission==='granted';
+  return `
+  <div class="panel" style="margin-bottom:14px">
+    <div class="toolbar">
+      <div class="ctls">
+        ${[['proximas','Próximas'],['hoje','Hoje'],['historico','Histórico'],['todas','Todas']].map(([k,l])=>`<button class="btn ${meetFilter===k?'btn-primary':''}" onclick="meetFilter='${k}';render()">${l}</button>`).join('')}
+      </div>
+      <button class="btn btn-primary" onclick="openMeetingForm()">+ Nova reunião</button>
+    </div>
+    ${notifOn?'':'<div class="sub" style="font-size:12px;margin-top:10px">🔔 <a style="color:var(--brand);cursor:pointer" onclick="askNotifPerm()">Ativar notificações do navegador</a> para ser avisado nos lembretes (funciona enquanto o site estiver aberto numa aba).</div>'}
+  </div>
+  <div class="panel">
+    ${list.length?list.map(m=>{
+      const cn=contacts.find(c=>c.id===m.contactId)?.name;
+      return `<div style="padding:12px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+          <div><b>${esc(m.title)}</b>${cn?` <span class="sub">· ${esc(cn)}</span>`:''}</div>
+          <span class="badge b-${m.status}">${STATUS_LABEL[m.status]||m.status}</span>
+        </div>
+        <div class="sub" style="font-size:12px;margin:4px 0">${fmtD(m.date)} às ${m.time||'—'} · lembrete ${MEET_REMIND[m.reminder]||'—'} · ${REC_LABEL[m.recurring||'none']}
+          ${m.link?` · <a href="${esc(m.link)}" target="_blank" style="color:var(--brand)">Link da reunião</a>`:''}</div>
+        ${m.description?`<div style="font-size:13px;margin:4px 0">${esc(m.description)}</div>`:''}
+        ${m.notes?`<div style="font-size:12px;margin:4px 0;color:var(--sub)">📝 ${esc(m.notes)}</div>`:''}
+        <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">
+          ${m.status==='agendada'?`<button class="icon-btn" onclick="meetAction('${m.id}','concluida')">✅ Concluir</button>
+            <button class="icon-btn" onclick="openMeetingForm('${m.id}',true)">🔁 Reagendar</button>
+            <button class="icon-btn btn-danger" onclick="meetAction('${m.id}','cancelada')">🚫 Cancelar</button>`:''}
+          <button class="icon-btn" onclick="openMeetingForm('${m.id}')">✏️ Editar</button>
+          <button class="icon-btn btn-danger" onclick="deleteItem('meetings','${m.id}')">🗑️ Excluir</button>
+        </div>
+      </div>`;
+    }).join(''):'<div class="empty">Nenhuma reunião nesta visão.</div>'}
+  </div>`;
+}
+function openMeetingForm(id,reschedule){
+  const m=id?meetings().find(x=>x.id===id):{},contacts=DB.get('contacts',[]);
+  showModal(`<form onsubmit="saveMeeting('${id||''}',${!!reschedule});return false;">
+  <h3>${reschedule?'Reagendar':id?'Editar':'Nova'} reunião</h3>
+  <div class="field"><label>Título *</label><input id="m_title" value="${esc(m.title||'')}" required></div>
+  <div class="field"><label>Cliente</label><select id="m_contact"><option value="">—</option>${contacts.map(c=>`<option value="${c.id}" ${m.contactId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+  <div class="field-grid">
+    <div class="field"><label>Data *</label><input id="m_date" type="date" value="${m.date||todayISO()}" required></div>
+    <div class="field"><label>Hora *</label><input id="m_time" type="time" value="${m.time||'09:00'}" required></div>
+  </div>
+  <div class="field"><label>Link (Meet/Zoom)</label><input id="m_link" value="${esc(m.link||'')}" placeholder="https://meet.google.com/..."></div>
+  <div class="field"><label>Descrição</label><textarea id="m_desc" rows="2">${esc(m.description||'')}</textarea></div>
+  <div class="field-grid">
+    <div class="field"><label>Lembrete</label><select id="m_remind">${Object.entries(MEET_REMIND).map(([k,l])=>`<option value="${k}" ${String(m.reminder)===k?'selected':''}>${l}</option>`).join('')}</select></div>
+    <div class="field"><label>Recorrência</label><select id="m_rec">${Object.entries(REC_LABEL).map(([k,l])=>`<option value="${k}" ${(m.recurring||'none')===k?'selected':''}>${l}</option>`).join('')}</select></div>
+  </div>
+  <div class="field"><label>Anotações pós-reunião</label><textarea id="m_notes" rows="2">${esc(m.notes||'')}</textarea></div>
+  <div class="modal-actions"><button type="button" class="btn" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" type="submit">Salvar</button></div>
+  </form>`);
+}
+function saveMeeting(id){
+  const title=$v('m_title').trim(),date=$v('m_date'),time=$v('m_time');
+  if(!title){toast('Título é obrigatório');return;}
+  if(!date||!time){toast('Informe data e hora');return;}
+  const d={title,contactId:$v('m_contact'),date,time,link:$v('m_link'),description:$v('m_desc'),
+    reminder:Number($v('m_remind')),recurring:$v('m_rec'),notes:$v('m_notes')};
+  const all=meetings();
+  if(id){const m=all.find(x=>x.id===id);Object.assign(m,d);m.status='agendada';m.notified=false;logActivity('Reunião atualizada: '+title);}
+  else{all.push({id:uid(),...d,status:'agendada',notified:false,createdAt:new Date().toISOString()});logActivity('Reunião agendada: '+title+' em '+fmtD(date));}
+  DB.set('meetings',all);closeModal();toast('Reunião salva.');render();
+}
+function meetAction(id,status){
+  const all=meetings(),m=all.find(x=>x.id===id);if(!m)return;
+  m.status=status;
+  if(status==='concluida'&&m.recurring&&m.recurring!=='none'){
+    const d=new Date(m.date+'T'+m.time);
+    d.setDate(d.getDate()+(m.recurring==='weekly'?7:0));
+    if(m.recurring==='monthly')d.setMonth(d.getMonth()+1);
+    all.push({...m,id:uid(),date:d.toISOString().slice(0,10),status:'agendada',notified:false,notes:''});
+    toast('Concluída. Próxima ocorrência criada em '+fmtD(d.toISOString().slice(0,10))+'.');
+  }else toast(status==='concluida'?'Reunião concluída.':'Reunião cancelada.');
+  logActivity('Reunião '+(status==='concluida'?'concluída':'cancelada')+': '+m.title);
+  DB.set('meetings',all);render();
+}
+function askNotifPerm(){
+  if(typeof Notification==='undefined'){toast('Seu navegador não suporta notificações.');return;}
+  Notification.requestPermission().then(p=>{toast(p==='granted'?'Notificações ativadas.':'Permissão não concedida.');render();});
+}
+function checkMeetingReminders(){
+  if(typeof Notification==='undefined'||Notification.permission!=='granted')return;
+  const now=new Date(),all=meetings();let changed=false;
+  all.forEach(m=>{
+    if(m.status!=='agendada'||m.notified||!m.reminder)return;
+    const dt=meetDT(m),remindAt=new Date(dt.getTime()-m.reminder*60000);
+    if(now>=remindAt&&now<dt){
+      try{new Notification('Reunião: '+m.title,{body:(DB.get('contacts',[]).find(c=>c.id===m.contactId)?.name||'')+' às '+m.time+(m.link?' · '+m.link:'')});}catch(e){}
+      m.notified=true;changed=true;
+    }
+  });
+  if(changed)DB.set('meetings',all);
+}
 </script>
 </body>
 </html>
